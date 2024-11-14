@@ -281,7 +281,7 @@ impl PathFilesystem for FilS3FS {
         let out = match res {
             Ok(v) => v,
             Err(e) => {
-                error!("lookup head object failed: {}", e);
+                error!("lookup head object failed; parent: {}, name: {}, key: {}, error: {}", parent, name, key, e);
                 return Err(Errno::new_not_exist());
             }
         };
