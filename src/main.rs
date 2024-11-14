@@ -628,7 +628,7 @@ impl PathFilesystem for FilS3FS {
             let op = guard.deref_mut();
 
             op.cache = data;
-            op.offset += offset + read_len as u64;
+            op.offset = offset + read_len as u64;
         }
         Ok(ReplyData { data: ret })
     }
