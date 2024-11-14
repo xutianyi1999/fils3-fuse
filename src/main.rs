@@ -491,7 +491,7 @@ impl PathFilesystem for FilS3FS {
             let mut guard = p.lock();
             let op = guard.deref_mut();
 
-            if offset == op.offset && op.cache.remaining() > 0 {
+            if offset == op.offset && op.cache.remaining() >= size as usize {
                 let read_len = std::cmp::min(op.cache.remaining(), size as usize);
                 let ret = op.cache.split_to(read_len);
                 op.offset += read_len as u64;
