@@ -692,7 +692,7 @@ impl PathFilesystem for FilS3FS {
                 let key = Path::new(obj.key.as_ref().unwrap());
                 let parent = key.parent().unwrap_or(Path::new("")).to_string_lossy();
                 
-                println!("object key: {}, parent: {}, parent_key: {}", key, parent, parent_key);
+                println!("object key: {}, parent: {}, parent_key: {}", key.display(), parent, parent_key);
                 parent == parent_key
             })
             .enumerate()
