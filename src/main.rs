@@ -269,7 +269,7 @@ impl PathFilesystem for FilS3FS {
         let client = &self.s3client;
         let bucket = self.bucket.as_str();
         let key = Path::new(parent).join(name);
-        let key =key.to_string_lossy();
+        let key = key.to_string_lossy();
         let key = key.trim_start_matches('/');
 
         let res = client.head_object()
@@ -281,15 +281,28 @@ impl PathFilesystem for FilS3FS {
         let out = match res {
             Ok(v) => v,
             Err(e) => {
-                error!("lookup head object failed; parent: {:?}, name: {:?}, key: {}, error: {}", parent, name, key, e);
-                return Err(Errno::new_not_exist());
-            }
-        };
+                // error!("lookup head object failed; parent: {:?}, name: {:?}, key: {}, error: {}", parent, name, key, e);
+                warn!("maybe common prefix: {}", key);
+                let attr = FileAttr {
+                    size: 0,
+                    blocks: 0,
+                    atime: SystemTime::UNIX_EPOCH,
+                    mtime: SystemTime::UNIX_EPOCH,
+                    ctime: SystemTime::UNIX_EPOCH,
+                    kind: FileType::Directory,
+                    perm: 0o644,
+                    nlink: 0,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    blksize: 0,
+                };
 
-        let kind = if is_dic(&out) {
-            FileType::Directory
-        } else { 
-            FileType::RegularFile
+                return Ok(ReplyEntry {
+                    ttl: Duration::from_secs(1),
+                    attr
+                });
+            }
         };
 
         let attr = FileAttr {
@@ -298,7 +311,7 @@ impl PathFilesystem for FilS3FS {
             atime: SystemTime::UNIX_EPOCH,
             mtime: SystemTime::UNIX_EPOCH,
             ctime: SystemTime::UNIX_EPOCH,
-            kind,
+            kind: FileType::RegularFile,
             perm: 0o644,
             nlink: 0,
             uid: 0,
