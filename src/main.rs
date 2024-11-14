@@ -673,7 +673,7 @@ impl PathFilesystem for FilS3FS {
 
         let res = client.list_objects_v2()
             .bucket(bucket)
-            // .prefix(parent_key)
+            .prefix(parent_key)
             .send()
             .await;
 
