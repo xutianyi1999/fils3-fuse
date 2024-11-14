@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate log;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::anyhow;
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
 use aws_sdk_s3::operation::head_object::HeadObjectOutput;
@@ -685,30 +685,43 @@ impl PathFilesystem for FilS3FS {
                 return Err(Errno::new_not_exist());
             }
         };
-
+        
         let objs = output.contents.unwrap_or_default();
+        let mut dics = AHashSet::new();
 
-        let it = objs.into_iter()
-            .filter(|obj| {
-                let key = Path::new(obj.key.as_ref().unwrap());
-                let parent = key.parent().unwrap_or(Path::new("")).to_string_lossy();
-                parent == parent_key
-            })
+        for obj in &objs {
+            let key = Path::new(obj.key.as_ref().unwrap());
+            let strip_key = key.strip_prefix(parent_key).unwrap();
+            let mut iter = strip_key.iter();
+        
+            if let Some(name) = iter.next() {
+                dics.insert(name.to_string_lossy().to_string());
+            }
+        }
+        
+        let obj_mapping = objs.into_iter()
+            .map(|obj| (obj.key().unwrap().to_string(), obj))
+            .collect::<AHashMap<_, _>>();
+        
+        let it = dics.into_iter()
             .enumerate()
-            .map(|(offset, obj)| {
-                let kind = if obj.size.unwrap_or_default() == 0 {
-                    FileType::Directory
-                } else {
-                    FileType::RegularFile
+            .map(|(offset, key)| {
+                let (kind, size) = match obj_mapping.get(Path::new(parent).join(&key).to_string_lossy().as_ref()) {
+                    None => {
+                        (FileType::Directory, 0)
+                    }
+                    Some(obj) => {
+                        let kind = if obj.size.unwrap_or_default() == 0 {
+                            FileType::Directory
+                        } else {
+                            FileType::RegularFile
+                        };
+                        (kind, obj.size.unwrap_or_default())
+                    }
                 };
 
-                let name = Path::new(obj.key.as_ref().unwrap())
-                    .file_name()
-                    .unwrap()
-                    .to_os_string();
-
                 let attr = FileAttr {
-                    size: obj.size.unwrap_or(0) as u64,
+                    size: size as u64,
                     blocks: 0,
                     atime: SystemTime::UNIX_EPOCH,
                     mtime: SystemTime::UNIX_EPOCH,
@@ -724,7 +737,7 @@ impl PathFilesystem for FilS3FS {
 
                 let entry = DirectoryEntryPlus {
                     kind,
-                    name,
+                    name: OsString::from(key),
                     offset: offset as i64 + 3,
                     attr,
                     entry_ttl: TTL,
@@ -732,7 +745,7 @@ impl PathFilesystem for FilS3FS {
                 };
                 Ok(entry)
             });
-
+     
         let out= pre_children.into_iter()
             .chain(it)
             .skip(offset as usize)
