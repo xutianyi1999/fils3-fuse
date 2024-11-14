@@ -503,8 +503,8 @@ impl PathFilesystem for FilS3FS {
         };
         
         let read_len = if buf_offset == offset {
-            // 10MB
-            1024 * 1024 * 10
+            // 64MB
+            1024 * 1024 * 64
         } else {
             size
         };
@@ -620,6 +620,7 @@ impl PathFilesystem for FilS3FS {
         let read_len = std::cmp::min(size as usize, data.len());
         let ret = data.split_to(read_len);
 
+        let buf;
         {
             let guard = openfils.read();
             let (_, p) = guard.get(&fh).ok_or_else(Errno::new_not_exist)?;
@@ -627,9 +628,11 @@ impl PathFilesystem for FilS3FS {
             let mut guard = p.lock();
             let op = guard.deref_mut();
 
-            op.cache = data;
+            buf = std::mem::replace(&mut op.cache, data);
             op.offset = offset + read_len as u64;
         }
+
+        drop(buf);
         Ok(ReplyData { data: ret })
     }
 
