@@ -1,0 +1,26 @@
+[package]
+name = "fils3-fuse"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fuse3 = { version =  "0.8" , features = ["tokio-runtime"] }
+libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+tokio = {version = "1", features = ["full"]}
+futures-util = "0.3"
+bytes = "1"
+log = "0.4"
+log4rs = "1"
+parking_lot = "0.12"
+rand = "0.8"
+ahash = "0.8"
+rust-lapper = { version = "*" }
+sscanf = "0.4"
+multipart = { git = "https://github.com/bitrainforest/multipart.git", default-features = false, features = ["server"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+aws-types = { version = "1" }
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
