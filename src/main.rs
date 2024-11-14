@@ -282,7 +282,7 @@ impl PathFilesystem for FilS3FS {
             Ok(v) => v,
             Err(e) => {
                 // error!("lookup head object failed; parent: {:?}, name: {:?}, key: {}, error: {}", parent, name, key, e);
-                warn!("maybe common prefix: {}", key);
+                warn!("lookup maybe common prefix: {}", key);
                 let attr = FileAttr {
                     size: 0,
                     blocks: 0,
@@ -369,8 +369,27 @@ impl PathFilesystem for FilS3FS {
         let out = match res {
             Ok(v) => v,
             Err(e) => {
-                error!("getattr head object failed; path: {:?}, key: {}, error: {}", path, key, e);
-                return Err(Errno::new_not_exist());
+                warn!("getattr maybe common prefix: {}", key);
+                
+                let attr = FileAttr {
+                    size: 0,
+                    blocks: 0,
+                    atime: SystemTime::UNIX_EPOCH,
+                    mtime: SystemTime::UNIX_EPOCH,
+                    ctime: SystemTime::UNIX_EPOCH,
+                    kind: FileType::Directory,
+                    perm: 0o644,
+                    nlink: 0,
+                    uid: 0,
+                    gid: 0,
+                    rdev: 0,
+                    blksize: 0,
+                };
+
+                return Ok(ReplyAttr {
+                    ttl: Duration::from_secs(1),
+                    attr
+                });
             }
         };
 
