@@ -673,6 +673,7 @@ impl PathFilesystem for FilS3FS {
 
         let res = client.list_objects_v2()
             .bucket(bucket)
+            .max_keys(i32::MAX)
             .prefix(parent_key)
             .send()
             .await;
@@ -691,8 +692,6 @@ impl PathFilesystem for FilS3FS {
             .filter(|obj| {
                 let key = Path::new(obj.key.as_ref().unwrap());
                 let parent = key.parent().unwrap_or(Path::new("")).to_string_lossy();
-                
-                println!("object key: {}, parent: {}, parent_key: {}", key.display(), parent, parent_key);
                 parent == parent_key
             })
             .enumerate()
