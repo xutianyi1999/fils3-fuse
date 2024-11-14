@@ -32,9 +32,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec::IntoIter;
 use std::io;
+use mimalloc::MiMalloc;
 use tokio::io::AsyncReadExt;
 use tokio::signal;
 use tokio::sync::mpsc::WeakSender;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 const TTL: Duration = Duration::from_secs(1);
 
@@ -316,6 +320,28 @@ impl PathFilesystem for FilS3FS {
         _fh: Option<u64>,
         _flags: u32,
     ) -> Result<ReplyAttr> {
+        if path == Some(OsStr::new("/")) {
+            let attr = FileAttr {
+                size: 0,
+                blocks: 0,
+                atime: SystemTime::UNIX_EPOCH,
+                mtime: SystemTime::UNIX_EPOCH,
+                ctime: SystemTime::UNIX_EPOCH,
+                kind: FileType::Directory,
+                perm: 0o644,
+                nlink: 0,
+                uid: 0,
+                gid: 0,
+                rdev: 0,
+                blksize: 0,
+            };
+
+            return Ok(ReplyAttr {
+                ttl: Duration::from_secs(1),
+                attr
+            });
+        }
+        
         let client = &self.s3client;
         let bucket = self.bucket.as_str();
         let key = path.ok_or_else(Errno::new_not_exist)?.to_string_lossy();
@@ -330,7 +356,7 @@ impl PathFilesystem for FilS3FS {
         let out = match res {
             Ok(v) => v,
             Err(e) => {
-                error!("getattr head object failed: {}", e);
+                error!("getattr head object failed; path: {:?}, key: {}, error: {}", path, key, e);
                 return Err(Errno::new_not_exist());
             }
         };
@@ -611,24 +637,6 @@ impl PathFilesystem for FilS3FS {
         let parent_key = parent.to_string_lossy();
         let parent_key = parent_key.trim_start_matches('/');
 
-        let res = client.head_object()
-            .bucket(bucket)
-            .key(parent_key)
-            .send()
-            .await;
-
-        let out = match res {
-            Ok(v) => v,
-            Err(e) => {
-                error!("readdirplus object failed: {}", e);
-                return Err(Errno::new_not_exist());
-            }
-        };
-
-        if !is_dic(&out) {
-            return Err(Errno::new_is_not_dir());
-        }
-
         let dic = FileAttr {
             size: 0,
             blocks: 0,
@@ -672,7 +680,7 @@ impl PathFilesystem for FilS3FS {
         let output = match res {
             Ok(v) => v,
             Err(e) => {
-                error!("list objects failed: {}", e);
+                error!("readdirplus list objects failed: {}", e);
                 return Err(Errno::new_not_exist());
             }
         };
