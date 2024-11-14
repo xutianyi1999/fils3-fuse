@@ -691,6 +691,8 @@ impl PathFilesystem for FilS3FS {
             .filter(|obj| {
                 let key = Path::new(obj.key.as_ref().unwrap());
                 let parent = key.parent().unwrap_or(Path::new("")).to_string_lossy();
+                
+                println!("object key: {}, parent: {}, parent_key: {}", key, parent, parent_key);
                 parent == parent_key
             })
             .enumerate()
@@ -736,7 +738,6 @@ impl PathFilesystem for FilS3FS {
             .chain(it)
             .skip(offset as usize)
             .collect::<Vec<_>>();
-
         Ok(ReplyDirectoryPlus {
             entries: stream::iter(out),
         })
