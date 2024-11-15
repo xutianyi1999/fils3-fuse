@@ -119,6 +119,19 @@ pub struct RangePart {
     pub range: (u64, u64),
 }
 
+fn strip_out_boundary(content_type: &str) -> Option<&str> {
+    sscanf::scanf!(
+        content_type,
+        "multipart/byteranges; boundary={}",
+        str
+    ).map_or_else(|_| sscanf::scanf!(
+        content_type,
+        "multipart/byteranges;boundary={}",
+        str
+    ), |v| Ok(v))
+   .ok()
+}
+
 /// # Arguments
 /// * `ranges` - (start position, length)
 async fn read_multi_ranges(
@@ -149,58 +162,50 @@ async fn read_multi_ranges(
 
     let content_type = resp.content_type.ok_or_else(|| anyhow!("Content-Type can't be empty"))?;
 
-    let parts = if content_type.contains("octet-stream") {
-        let range = resp.content_range.ok_or_else(|| anyhow!("Content-Range can't be empty") )?;
-
-        let (start, end, _): (u64, u64, u64) = parse_range(&range)?;
-
-        let len = end - start + 1;
-        let mut buff = Vec::with_capacity(len as usize);
-        resp.body.into_async_read().read_to_end(&mut buff).await?;
-
-        let part = RangePart {
-            data: Bytes::from(buff),
-            range: (start, len),
-        };
-        vec![part]
-    } else {
-        let boundary: &str = sscanf::scanf!(
-            content_type,
-            "multipart/byteranges; boundary={}",
-            str
-        ).map_or_else(|_| sscanf::scanf!(
-            content_type,
-            "multipart/byteranges;boundary={}",
-            str
-        ), |v| Ok(v))
-        .map_err(|_| anyhow!("get boundary error; content_type: {}", content_type))?;
-
-        let cl = resp.content_length.unwrap_or(0);
-
-        let mut buff = Vec::with_capacity(cl as usize);
-        resp.body.into_async_read().read_to_end(&mut buff).await?;
-        let mut parts = multipart::server::Multipart::with_body(buff.as_slice(), boundary);
-
-        let mut list = Vec::with_capacity(ranges.len());
-
-        while let Some(mut part) = parts.read_entry()? {
-            let range = part.headers.content_range.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "Content-Range can't be empty")
-            })?;
+    let parts = match strip_out_boundary(&content_type) {
+        None => {
+            let range = resp.content_range.ok_or_else(|| anyhow!("Content-Range can't be empty") )?;
 
             let (start, end, _): (u64, u64, u64) = parse_range(&range)?;
-            let len = end - start + 1;
 
+            let len = end - start + 1;
             let mut buff = Vec::with_capacity(len as usize);
-            part.data.read_to_end(&mut buff)?;
+            resp.body.into_async_read().read_to_end(&mut buff).await?;
 
             let part = RangePart {
                 data: Bytes::from(buff),
                 range: (start, len),
             };
-            list.push(part);
+            vec![part]
         }
-        list
+        Some(boundary) => {
+            let cl = resp.content_length.unwrap_or(0);
+
+            let mut buff = Vec::with_capacity(cl as usize);
+            resp.body.into_async_read().read_to_end(&mut buff).await?;
+            let mut parts = multipart::server::Multipart::with_body(buff.as_slice(), boundary);
+
+            let mut list = Vec::with_capacity(ranges.len());
+
+            while let Some(mut part) = parts.read_entry()? {
+                let range = part.headers.content_range.ok_or_else(|| {
+                   anyhow!("Content-Range can't be empty")
+                })?;
+
+                let (start, end, _): (u64, u64, u64) = parse_range(&range)?;
+                let len = end - start + 1;
+
+                let mut buff = Vec::with_capacity(len as usize);
+                part.data.read_to_end(&mut buff)?;
+
+                let part = RangePart {
+                    data: Bytes::from(buff),
+                    range: (start, len),
+                };
+                list.push(part);
+            }
+            list
+        }
     };
 
     if parts.len() == ranges.len() {
