@@ -231,7 +231,6 @@ async fn read_multi_ranges(
             vec![part]
         }
         Some(boundary) => {
-            println!("parts num: {}", ranges.len());
             let cl = resp.content_length.unwrap_or(0);
 
             let mut buff = Vec::with_capacity(cl as usize);
