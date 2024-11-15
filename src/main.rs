@@ -566,11 +566,11 @@ impl PathFilesystem for FilS3FS {
         let read_len = std::cmp::min(read_len as u64, file_len - offset) as u32;
 
         let tx = {
-            let mut need_sleep = false;
+            let mut need_yield = false;
 
             loop {
-                if need_sleep {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                if need_yield {
+                    tokio::task::yield_now().await;
                 }
                 let guard = aggregated_mapping.read();
 
@@ -584,6 +584,19 @@ impl PathFilesystem for FilS3FS {
                                 let (tx, rx) = tokio::sync::mpsc::channel(8192);
                                 guard.insert(key.to_string(), tx.downgrade());
                                 drop(guard);
+
+                                tokio::spawn({
+                                    let tx = tx.clone();
+
+                                    async move {
+                                        tokio::time::sleep(Duration::from_secs(3)).await;
+
+                                        while tx.strong_count() > 1 {
+                                            tokio::time::sleep(Duration::from_secs(3)).await;
+                                        }
+                                        drop(tx);
+                                    }
+                                });
 
                                 tokio::spawn({
                                     let s3client = client.clone();
@@ -639,7 +652,7 @@ impl PathFilesystem for FilS3FS {
                                 if let Some(tx) = tx.upgrade() {
                                     break tx;
                                 } else {
-                                    need_sleep = true;
+                                    need_yield = true;
                                 }
                             }
                         }
@@ -648,7 +661,7 @@ impl PathFilesystem for FilS3FS {
                         if let Some(tx) = tx.upgrade() {
                             break tx;
                         } else {
-                            need_sleep = true;
+                            need_yield = true;
                         }
                     }
                 }
@@ -687,12 +700,6 @@ impl PathFilesystem for FilS3FS {
         }
 
         drop(buf);
-
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            drop(tx);
-        });
-
         Ok(ReplyData { data: ret })
     }
 
