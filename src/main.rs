@@ -164,16 +164,16 @@ async fn read_multi_ranges(
         };
         vec![part]
     } else {
-        let boundary: String = sscanf::scanf!(
+        let boundary: &str = sscanf::scanf!(
             content_type,
             "multipart/byteranges; boundary={}",
-            String
+            str
         ).map_or_else(|_| sscanf::scanf!(
             content_type,
             "multipart/byteranges;boundary={}",
-            String
+            str
         ), |v| Ok(v))
-        .map_err(|_| anyhow!("get boundary error"))?;
+        .map_err(|_| anyhow!("get boundary error; content_type: {}", content_type))?;
 
         let cl = resp.content_length.unwrap_or(0);
 
