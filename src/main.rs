@@ -44,6 +44,8 @@ use rand::Rng;
 use tokio::io::AsyncReadExt;
 use tokio::signal;
 use tokio::sync::mpsc::WeakSender;
+use tokio::time::error::Elapsed;
+use tokio::time::Instant;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -595,17 +597,40 @@ impl PathFilesystem for FilS3FS {
                                     async move {
                                         let mut rx = rx;
                                         let mut parts = Vec::new();
+                                        let mut last_read = Instant::now();
+                                        let mut parts_buf = Vec::new();
 
                                         loop {
-                                            let count = rx.recv_many(&mut parts, 8192).await;
+                                            let res = tokio::time::timeout_at(last_read + Duration::from_millis(500), rx.recv_many(&mut parts, 1024)).await;
 
-                                            if count == 0 {
+                                            if res == Ok(0) {
                                                 break;
                                             }
 
-                                            let recv = parts.drain(..parts.len()).collect::<Vec<_>>();
+                                            if parts_buf.is_empty() && res.is_err() {
+                                                continue;
+                                            }
 
-                                            let ranges = recv.iter()
+                                            if parts_buf.is_empty() {
+                                                last_read = Instant::now();
+                                            }
+
+                                            let recv = parts.drain(..parts.len()).collect::<Vec<_>>();
+                                            parts_buf.extend(recv);
+
+                                            let mut total_size = 0;
+
+                                            for (r, _) in &parts_buf {
+                                                total_size += r.size;
+                                            }
+
+                                            if last_read.elapsed() < Duration::from_millis(500) && total_size < 1024 * 1024{
+                                                continue;
+                                            }
+
+                                            let read_parts = std::mem::take(&mut parts_buf);
+
+                                            let ranges = read_parts.iter()
                                                 .map(|(part, _)| (part.offset, part.size as u64))
                                                 .collect::<Vec<_>>();
 
@@ -619,14 +644,14 @@ impl PathFilesystem for FilS3FS {
                                             let list = match res {
                                                 Ok(v) => v,
                                                 Err(e) => {
-                                                    for (_, callback) in recv {
+                                                    for (_, callback) in read_parts {
                                                         let _ = callback.send(Err(anyhow!(e.to_string())));
                                                     }
                                                     continue;
                                                 }
                                             };
 
-                                            for ((_, callback), p) in recv.into_iter().zip(list) {
+                                            for ((_, callback), p) in read_parts.into_iter().zip(list) {
                                                 let _ = callback.send(Ok(p));
                                             }
                                         }
