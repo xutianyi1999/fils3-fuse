@@ -63,7 +63,7 @@ struct Range {
 
 struct FilS3FS {
     s3client: Client,
-    bucket: Arc<String>,
+    bucket: String,
     // handle -> (file size, cache)
     fil_mapping: parking_lot::RwLock<BTreeMap<u64, (u64, parking_lot::Mutex<OpenFile>)>>,
     aggregated_read_mapping: Arc<parking_lot::RwLock<AHashMap<String, WeakSender<(Range, tokio::sync::oneshot::Sender<anyhow::Result<RangePart>>)>>>>
@@ -131,7 +131,7 @@ impl FilS3FS {
 
         FilS3FS {
             s3client,
-            bucket: Arc::new(bucket.to_string()),
+            bucket: bucket.to_string(),
             fil_mapping: parking_lot::RwLock::new(BTreeMap::new()),
             aggregated_read_mapping: Arc::new(parking_lot::RwLock::new(AHashMap::new()))
         }
@@ -524,7 +524,7 @@ impl PathFilesystem for FilS3FS {
         size: u32,
     ) -> Result<ReplyData> {
         let client = &self.s3client;
-        let bucket = &self.bucket;
+        let bucket = self.bucket.as_str();
         let openfils = &self.fil_mapping;
         let aggregated_mapping = &self.aggregated_read_mapping;
         
@@ -600,8 +600,8 @@ impl PathFilesystem for FilS3FS {
 
                                 tokio::spawn({
                                     let s3client = client.clone();
-                                    let bucket = bucket.clone();
-                                    let key = Arc::new(key.to_string());
+                                    let bucket = bucket.to_string();
+                                    let key = key.to_string();
                                     let aggregated_mapping = aggregated_mapping.clone();
 
                                     async move {
@@ -617,47 +617,33 @@ impl PathFilesystem for FilS3FS {
 
                                             let recv = parts.drain(..parts.len()).collect::<Vec<_>>();
 
-                                            let fut = {
-                                                let key = key.clone();
-                                                let bucket = bucket.clone();
-                                                let s3client = s3client.clone();
+                                            let ranges = recv.iter()
+                                                .map(|(part, _)| (part.offset, part.size as u64))
+                                                .collect::<Vec<_>>();
 
-                                                async move {
-                                                    let ranges = recv.iter()
-                                                        .map(|(part, _)| (part.offset, part.size as u64))
-                                                        .collect::<Vec<_>>();
+                                            let res = read_multi_ranges(
+                                                &s3client,
+                                                &bucket,
+                                                &key,
+                                                &ranges,
+                                            ).await;
 
-                                                    let res = read_multi_ranges(
-                                                        &s3client,
-                                                        &bucket,
-                                                        &key,
-                                                        &ranges,
-                                                    ).await;
-
-                                                    let list = match res {
-                                                        Ok(v) => v,
-                                                        Err(e) => {
-                                                            for (_, callback) in recv {
-                                                                let _ = callback.send(Err(anyhow!(e.to_string())));
-                                                            }
-                                                            return;
-                                                        }
-                                                    };
-
-                                                    for ((_, callback), p) in recv.into_iter().zip(list) {
-                                                        let _ = callback.send(Ok(p));
+                                            let list = match res {
+                                                Ok(v) => v,
+                                                Err(e) => {
+                                                    for (_, callback) in recv {
+                                                        let _ = callback.send(Err(anyhow!(e.to_string())));
                                                     }
+                                                    continue;
                                                 }
                                             };
 
-                                            if count > 1 {
-                                                tokio::spawn(fut);
-                                            } else {
-                                                fut.await;
+                                            for ((_, callback), p) in recv.into_iter().zip(list) {
+                                                let _ = callback.send(Ok(p));
                                             }
                                         }
 
-                                        aggregated_mapping.write().remove(key.as_str());
+                                        aggregated_mapping.write().remove(&key);
                                     }
                                 });
                                 break tx;
