@@ -689,10 +689,13 @@ impl PathFilesystem for FilS3FS {
 
         drop(buf);
 
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            drop(tx);
-        });
+        if tx.strong_count() == 1 {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                drop(tx);
+            });
+        }
+
         Ok(ReplyData { data: ret })
     }
 
