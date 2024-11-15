@@ -22,6 +22,8 @@ multipart = { git = "https://github.com/bitrainforest/multipart.git", default-fe
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+hyper = "0.14"
 
 aws-types = { version = "1" }
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-smithy-runtime = { version = "1" }

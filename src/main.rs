@@ -31,8 +31,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec::IntoIter;
-use std::io;
+use std::{io, task};
+use std::net::SocketAddr;
+use std::task::Poll;
+use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
+use futures_util::future::MapOk;
+use hyper::client::connect::dns::GaiResolver;
+use hyper::client::HttpConnector;
 use mimalloc::MiMalloc;
+use rand::Rng;
 use tokio::io::AsyncReadExt;
 use tokio::signal;
 use tokio::sync::mpsc::WeakSender;
@@ -61,6 +68,37 @@ struct FilS3FS {
     aggregated_read_mapping: Arc<parking_lot::RwLock<AHashMap<String, WeakSender<(Range, tokio::sync::oneshot::Sender<anyhow::Result<RangePart>>)>>>>
 }
 
+#[derive(Clone)]
+struct RoundRobin {
+    inner: GaiResolver,
+}
+
+impl Service<Name> for RoundRobin {
+    type Response = IntoIter<SocketAddr>;
+    type Error = io::Error;
+    type Future = MapOk<GaiFuture, fn(GaiAddrs) -> IntoIter<SocketAddr>>;
+
+    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<anyhow::Result<(), io::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, name: Name) -> Self::Future {
+        self.inner.call(name).map_ok(|v| {
+            let mut list: Vec<SocketAddr> = v.collect();
+
+            if list.len() > 1 {
+                let i = rand::thread_rng().gen_range(0..list.len());
+                list = vec![list[i]];
+            }
+
+            if !list.is_empty() {
+                debug!("ip select {}", list[0]);
+            }
+            list.into_iter()
+        })
+    }
+}
+
 impl FilS3FS {
     pub fn new(
         endpoint: &str,
@@ -80,6 +118,13 @@ impl FilS3FS {
             None,
             "Static",
         )));
+
+        let connector = HttpConnector::new_with_resolver(RoundRobin { inner: GaiResolver::new() });
+
+        let client = HyperClientBuilder::new()
+            .build(connector);
+
+        builder.set_http_client(Some(client));
 
         let s3client = Client::new(&builder.build());
 
