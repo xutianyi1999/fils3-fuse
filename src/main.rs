@@ -282,7 +282,6 @@ impl PathFilesystem for FilS3FS {
             Ok(v) => v,
             Err(e) => {
                 // error!("lookup head object failed; parent: {:?}, name: {:?}, key: {}, error: {}", parent, name, key, e);
-                warn!("lookup maybe common prefix: {}", key);
                 let attr = FileAttr {
                     size: 0,
                     blocks: 0,
@@ -369,8 +368,6 @@ impl PathFilesystem for FilS3FS {
         let out = match res {
             Ok(v) => v,
             Err(e) => {
-                warn!("getattr maybe common prefix: {}", key);
-                
                 let attr = FileAttr {
                     size: 0,
                     blocks: 0,
