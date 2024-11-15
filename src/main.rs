@@ -164,11 +164,17 @@ async fn read_multi_ranges(
 
     let parts = match strip_out_boundary(&content_type) {
         None => {
-            let range = resp.content_range.ok_or_else(|| anyhow!("Content-Range can't be empty") )?;
+            let (start, len) = match resp.content_range {
+                None => {
+                    let len = resp.content_length.ok_or_else(|| anyhow!("Content-Length can't be empty"))?;
+                    (0, len as u64)
+                }
+                Some(range) => {
+                    let (start, end, _) = parse_range(&range)?;
+                    (start, end - start + 1)
+                }
+            };
 
-            let (start, end, _): (u64, u64, u64) = parse_range(&range)?;
-
-            let len = end - start + 1;
             let mut buff = Vec::with_capacity(len as usize);
             resp.body.into_async_read().read_to_end(&mut buff).await?;
 
