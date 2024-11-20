@@ -34,12 +34,17 @@ use std::vec::IntoIter;
 use std::{io, task};
 use std::net::SocketAddr;
 use std::task::Poll;
+use aws_sdk_s3::config::http::HttpResponse;
+use aws_sdk_s3::operation::delete_object::{DeleteObjectError, DeleteObjectOutput};
+use aws_sdk_s3::operation::delete_objects::{DeleteObjectsError, DeleteObjectsOutput};
+use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
 use futures_util::future::MapOk;
 use hyper::client::connect::dns::{GaiAddrs, GaiFuture, GaiResolver, Name};
 use hyper::client::HttpConnector;
 use hyper::service::Service;
 use mimalloc::MiMalloc;
+use parking_lot::Mutex;
 use rand::Rng;
 use tokio::io::AsyncReadExt;
 use tokio::signal;
@@ -99,6 +104,21 @@ impl Service<Name> for RoundRobin {
         })
     }
 }
+
+const DIC_ATTR: FileAttr = FileAttr {
+    size: 0,
+    blocks: 0,
+    atime: SystemTime::UNIX_EPOCH,
+    mtime: SystemTime::UNIX_EPOCH,
+    ctime: SystemTime::UNIX_EPOCH,
+    kind: FileType::Directory,
+    perm: 0o644,
+    nlink: 0,
+    uid: 0,
+    gid: 0,
+    rdev: 0,
+    blksize: 0,
+};
 
 impl FilS3FS {
     pub fn new(
@@ -316,7 +336,7 @@ impl PathFilesystem for FilS3FS {
 
     async fn init(&self, _req: Request) -> Result<ReplyInit> {
         Ok(ReplyInit {
-            max_write: NonZeroU32::new(16 * 1024).unwrap(),
+            max_write: NonZeroU32::new(1024 * 1024 * 64).unwrap(),
         })
     }
 
@@ -857,54 +877,142 @@ impl PathFilesystem for FilS3FS {
         })
     }
 
-    // async fn lseek(
-    //     &self,
-    //     _req: Request,
-    //     path: Option<&OsStr>,
-    //     _fh: u64,
-    //     offset: u64,
-    //     whence: u32,
-    // ) -> Result<ReplyLSeek> {
-    //     let path = path.ok_or_else(Errno::new_not_exist)?.to_string_lossy();
-    //     let paths = split_path(&path);
-    // 
-    //     let mut entry = &self.0.read().await.root;
-    // 
-    //     for path in paths {
-    //         if let Entry::Dir(dir) = entry {
-    //             entry = dir
-    //                 .children
-    //                 .get(OsStr::new(path))
-    //                 .ok_or_else(Errno::new_not_exist)?;
-    //         } else {
-    //             return Err(Errno::new_is_not_dir());
-    //         }
-    //     }
-    // 
-    //     let file = if let Entry::File(file) = entry {
-    //         file
-    //     } else {
-    //         return Err(Errno::new_is_dir());
-    //     };
-    // 
-    //     let whence = whence as i32;
-    // 
-    //     let offset = if whence == libc::SEEK_CUR || whence == libc::SEEK_SET {
-    //         offset
-    //     } else if whence == libc::SEEK_END {
-    //         let size = file.content.len();
-    // 
-    //         if size >= offset as _ {
-    //             size as u64 - offset
-    //         } else {
-    //             0
-    //         }
-    //     } else {
-    //         return Err(libc::EINVAL.into());
-    //     };
-    // 
-    //     Ok(ReplyLSeek { offset })
-    // }
+    async fn lseek(
+        &self,
+        _req: Request,
+        _path: Option<&OsStr>,
+        fh: u64,
+        offset: u64,
+        whence: u32,
+    ) -> Result<ReplyLSeek> {
+        let openfils = &self.fil_mapping;
+
+        let whence = whence as i32;
+        let file_size;
+        let mut curr_offset;
+
+        {
+            match openfils.read().get(&fh) {
+                None => return Err(Errno::new_not_exist()),
+                Some(((size, p))) => {
+                    file_size = *size;
+                    curr_offset = p.lock().offset;
+                }
+            }
+        }
+
+        let new_offset = match whence {
+            libc::SEEK_SET => offset,
+            libc::SEEK_CUR => {
+                std::cmp::min(curr_offset + offset, file_size)
+            },
+            libc::SEEK_END => {
+               std::cmp::max(curr_offset - offset, file_size)
+            }
+            _ => return Err(libc::EINVAL.into())
+        };
+
+        Ok(ReplyLSeek { offset: new_offset })
+    }
+
+    async fn mkdir(
+        &self,
+        _req: Request,
+        _parent: &OsStr,
+        _name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+    ) -> Result<ReplyEntry> {
+        Ok(ReplyEntry {
+            ttl: TTL,
+            attr: DIC_ATTR
+        })
+    }
+
+    async fn unlink(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
+        let client = &self.s3client;
+        let bucket = self.bucket.as_str();
+
+        let key = Path::new(parent).join(name);
+        let key = key.to_string_lossy();
+        let key = key.trim_start_matches('/');
+
+        let res = client.delete_object()
+            .bucket(bucket)
+            .key(key)
+            .send()
+            .await;
+
+        if let Err(e) = res {
+            error!("unlink delete object error: {}", e);
+            return Err(Errno::new_not_exist());
+        }
+
+        Ok(())
+    }
+
+    async fn rmdir(&self, _req: Request, parent: &OsStr, name: &OsStr) -> Result<()> {
+        let client = &self.s3client;
+        let bucket = self.bucket.as_str();
+
+        let key = Path::new(parent).join(name);
+        let key = key.to_string_lossy();
+        let key = key.trim_start_matches('/');
+
+        let res = client.list_objects_v2()
+            .bucket(bucket)
+            .max_keys(i32::MAX)
+            .prefix(key)
+            .send()
+            .await;
+
+        let output = match res {
+            Ok(v) => v,
+            Err(e) => {
+                error!("rmdir list objects failed: {}", e);
+                return Err(Errno::new_not_exist());
+            }
+        };
+
+        let objs = output.contents.unwrap_or_default();
+
+        let dels= objs.into_iter()
+            .filter(|obj| obj.size.unwrap_or_default() > 0)
+            .map(|obj| {
+                ObjectIdentifier{
+                    key: obj.key.unwrap(),
+                    version_id: None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let res = client.delete_objects()
+            .bucket(bucket)
+            .delete(Delete {
+                objects: dels,
+                quiet: Some(true),
+            })
+            .send()
+            .await;
+
+        if let Err(e) = res {
+            error!("rmdir delete objects error: {}", e);
+        }
+        Ok(())
+    }
+
+    async fn write(
+        &self,
+        _req: Request,
+        path: Option<&OsStr>,
+        _fh: u64,
+        offset: u64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: u32,
+    ) -> Result<ReplyWrite> {
+        todo!()
+    }
 }
 
 fn log_init() -> anyhow::Result<()>{
