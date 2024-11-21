@@ -706,7 +706,6 @@ impl PathFilesystem for FilS3FS {
         let mut data = range_part.data;
         let read_len = std::cmp::min(size as usize, data.len());
         let ret = data.split_to(read_len);
-
         let buf;
         {
             let guard = openfils.read();
@@ -753,6 +752,7 @@ impl PathFilesystem for FilS3FS {
         offset: u64,
         _lock_owner: u64,
     ) -> Result<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
+
         let client = &self.s3client;
         let bucket = self.bucket.as_str();
 
@@ -979,19 +979,22 @@ impl PathFilesystem for FilS3FS {
         let dels= objs.into_iter()
             .filter(|obj| obj.size.unwrap_or_default() > 0)
             .map(|obj| {
-                ObjectIdentifier{
-                    key: obj.key.unwrap(),
-                    version_id: None
-                }
+                ObjectIdentifier::builder()
+                    .key(obj.key.unwrap())
+                    .build()
+                    .unwrap()
             })
             .collect::<Vec<_>>();
 
+        let del = Delete::builder()
+            .set_objects(Some(dels))
+            .quiet(true)
+            .build()
+            .unwrap();
+
         let res = client.delete_objects()
             .bucket(bucket)
-            .delete(Delete {
-                objects: dels,
-                quiet: Some(true),
-            })
+            .delete(del)
             .send()
             .await;
 
